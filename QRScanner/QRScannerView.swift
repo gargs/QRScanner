@@ -18,7 +18,7 @@ public protocol QRScannerViewDelegate: AnyObject {
     func qrScannerView(_ qrScannerView: QRScannerView, didChangeTorchActive isOn: Bool)
 }
 
-public extension QRScannerViewDelegate where Self: AnyObject {
+public extension QRScannerViewDelegate {
     func qrScannerView(_ qrScannerView: QRScannerView, didChangeTorchActive isOn: Bool) {}
 }
 
@@ -59,6 +59,14 @@ public class QRScannerView: UIView {
     public var isBlurEffectEnabled: Bool = false
 
     // MARK: - Public
+    
+    public override class var layerClass: AnyClass {
+        AVCaptureVideoPreviewLayer.self
+    }
+    
+    public override func layoutSubviews() {
+        self.frame = superview?.bounds ?? .zero
+    }
 
     public func configure(delegate: QRScannerViewDelegate, input: Input = .default) {
         self.delegate = delegate
@@ -132,7 +140,6 @@ public class QRScannerView: UIView {
         qrCodeImageView.removeFromSuperview()
         session.inputs.forEach { session.removeInput($0) }
         session.outputs.forEach { session.removeOutput($0) }
-        removePreviewLayer()
         torchActiveObservation = nil
     }
 
@@ -142,7 +149,9 @@ public class QRScannerView: UIView {
     private let metadataQueue = DispatchQueue(label: "metadata.session.qrreader.queue")
     private let videoDataQueue = DispatchQueue(label: "videoData.session.qrreader.queue")
     private let session = AVCaptureSession()
-    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var previewLayer: AVCaptureVideoPreviewLayer {
+        self.layer as! AVCaptureVideoPreviewLayer
+    }
     private var focusImageView = UIImageView()
     private var qrCodeImageView = UIImageView()
     private var metadataOutput = AVCaptureMetadataOutput()
@@ -230,7 +239,7 @@ public class QRScannerView: UIView {
         }
 
         // start running
-        if authorizationStatus() == .notDetermined {
+        if authorizationStatus() != .restrictedOrDenied {
             videoDataOutputEnable = false
             metadataOutputEnable = true
             metadataQueue.async { [weak self] in
@@ -246,10 +255,9 @@ public class QRScannerView: UIView {
     }
 
     private func setupImageViews() {
-        let width = self.bounds.width * 0.618
-        let x = self.bounds.width * 0.191
-        let y = self.bounds.height * 0.191
-        focusImageView = UIImageView(frame: CGRect(x: x, y: y, width: width, height: width))
+        focusImageView = UIImageView(frame: .init(origin: .zero, size: .init(width: 200.0, height: 200.0)))
+        focusImageView.center = center
+        focusImageView.autoresizingMask = [.flexibleTopMargin, .flexibleLeftMargin, .flexibleBottomMargin, .flexibleRightMargin]
         focusImageView.image = focusImage ?? UIImage(named: "scan_qr_focus", in: .module, compatibleWith: nil)
         addSubview(focusImageView)
 
@@ -259,16 +267,8 @@ public class QRScannerView: UIView {
     }
 
     private func addPreviewLayer() {
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        previewLayer.session = session
         previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.frame = self.bounds
-        layer.addSublayer(previewLayer)
-
-        self.previewLayer = previewLayer
-    }
-
-    private func removePreviewLayer() {
-        previewLayer?.removeFromSuperlayer()
     }
 
     private func moveImageViews(qrCode: String, corners: [CGPoint]) {
@@ -338,17 +338,16 @@ public class QRScannerView: UIView {
 extension QRScannerView: AVCaptureMetadataOutputObjectsDelegate {
     public func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
         guard metadataOutputEnable else { return }
-        if let metadataObject = metadataObjects.first {
-            guard let readableObject = previewLayer?.transformedMetadataObject(for: metadataObject) as? AVMetadataMachineReadableCodeObject, metadataObject.type == .qr else { return }
-            guard let stringValue = readableObject.stringValue else { return }
-            metadataOutputEnable = false
-            videoDataOutputEnable = true
-
-            DispatchQueue.main.async { [weak self] in
-                guard let strongSelf = self else { return }
-                strongSelf.setTorchActive(isOn: false)
-                strongSelf.moveImageViews(qrCode: stringValue, corners: readableObject.corners)
-            }
+        DispatchQueue.main.async { [weak self] in
+            guard let strongSelf = self else { return }
+            guard let metadataObject = metadataObjects.first,
+                  let readableObject = strongSelf.previewLayer.transformedMetadataObject(for: metadataObject) as? AVMetadataMachineReadableCodeObject,
+                  metadataObject.type == .qr,
+                  let stringValue = readableObject.stringValue else { return }
+            strongSelf.metadataOutputEnable = false
+            strongSelf.videoDataOutputEnable = true
+            strongSelf.setTorchActive(isOn: false)
+            strongSelf.moveImageViews(qrCode: stringValue, corners: readableObject.corners)
         }
     }
 }
